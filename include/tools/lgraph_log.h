@@ -27,6 +27,7 @@
 #include <boost/log/utility/manipulators/add_value.hpp>
 #include <boost/phoenix/bind/bind_function.hpp>
 #include <boost/core/null_deleter.hpp>
+#include "lgraph/lgraph_date_time.h"
 #include "tools/json.hpp"
 
 namespace lgraph_log {
@@ -357,6 +358,96 @@ class AuditLogger {
         static AuditLogger instance;
         return instance;
     }
+};
+
+// query log
+
+#define QUERY_LOG() BOOST_LOG(::lgraph_log::query_logger::get())
+
+BOOST_LOG_INLINE_GLOBAL_LOGGER_INIT(query_logger, src::logger_mt) {
+  src::logger_mt lg;
+  attrs::constant< std::string > query_type("query");
+  lg.add_attribute("LogType", query_type);
+  return lg;
+}
+
+// query logger
+class QueryLogger {
+ private:
+    std::string log_dir_;
+    int64_t threshold;
+    int rotation_size_;
+    boost::shared_ptr< file_sink > query_sink_;
+    bool global_inited_ = false;
+
+ public:
+    void Init(std::string log_dir = "logs/") {
+        // Set up log directory
+        log_dir_ = log_dir;
+        if (log_dir_.back() != '/') {
+            log_dir_ += '/';
+        }
+        rotation_size_ = 5 * 1024 * 1024;
+
+        // Set up sink for debug log
+        query_sink_ = boost::shared_ptr< file_sink > (new file_sink(
+            keywords::file_name = log_dir_ + "query_logs/" + "query_%Y%m%d_%H%M%S%f.log",
+            keywords::open_mode = std::ios_base::out | std::ios_base::app,
+            keywords::enable_final_rotation = false,
+            keywords::auto_flush = true,
+            keywords::rotation_size = rotation_size_)); 
+        query_sink_->locked_backend()->scan_for_files();
+        query_sink_->set_filter(log_type_attr == "query");
+
+        // Add sinks to log core
+        logging::core::get()->add_sink(query_sink_);
+
+        global_inited_ = true;
+    }
+
+    // write a json record to log file.
+    void WriteLog(std::string log_msg, int64_t start_time, int64_t end_time) {
+        if(end_time - start_time >= threshold) {
+            QUERY_LOG() << log_msg;
+        }
+    }
+
+    // remove sink from log core
+    void Close() {
+        logging::core::get()->remove_sink(query_sink_);
+    }
+
+    static QueryLogger& GetInstance() {
+        static QueryLogger instance;
+        return instance;
+    }
+};
+
+// query logger tls
+class QueryLoggerTLS {
+    bool begun_ = false;
+    int64_t start_time;
+    int64_t end_time;
+
+ public:
+    int Begin() {
+        if (!begun_) {
+            begun_ = true;
+            start_time = lgraph_api::DateTime::LocalNow().MicroSecondsSinceEpoch();
+        }
+        return 0;
+    }
+
+    int End() {
+        if (begun_) {
+            end_time = lgraph_api::DateTime::LocalNow().MicroSecondsSinceEpoch();
+            QueryLogger::GetInstance().WriteLog("query test", start_time, end_time);
+            begun_ = false;
+        }
+        return 0;
+    }
+
+    static thread_local QueryLoggerTLS instance_;
 };
 
 }  // namespace lgraph_log
