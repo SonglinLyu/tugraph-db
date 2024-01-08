@@ -57,6 +57,139 @@ enum severity_level {
     FATAL
 };
 
+// query logger
+#define QUERY_LOG() BOOST_LOG(::lgraph_log::query_logger::get())
+
+BOOST_LOG_INLINE_GLOBAL_LOGGER_INIT(query_logger, src::logger_mt) {
+  src::logger_mt lg;
+  attrs::constant< std::string > query_type("query");
+  lg.add_attribute("LogType", query_type);
+  return lg;
+}
+
+class QueryLogger {
+ private:
+    std::string log_dir_;
+    int64_t threshold = 0;
+    int rotation_size_;
+    boost::shared_ptr< file_sink > query_sink_;
+    bool global_inited_ = false;
+
+    static void formatter(logging::record_view const& rec, logging::formatting_ostream& strm) {
+        auto actor = expr::stream << "[" <<
+                     expr::format_date_time< boost::posix_time::ptime >(
+                         "TimeStamp", "%Y%m%d %H:%M:%S.%f") << "] ";
+        actor(rec, strm);
+        strm << rec[expr::smessage];
+    }
+
+ public:
+    void Init(std::string log_dir = "logs/") {
+        // Set up log directory
+        log_dir_ = log_dir;
+        if (log_dir_.back() != '/') {
+            log_dir_ += '/';
+        }
+        log_dir_ += "query_logs/";
+        rotation_size_ = 5 * 1024 * 1024;
+
+        // Set up sink for query log
+        query_sink_ = boost::shared_ptr< file_sink > (new file_sink(
+            keywords::file_name = log_dir_ + "query_%Y%m%d_%H%M%S%f.log",
+            keywords::open_mode = std::ios_base::out | std::ios_base::app,
+            keywords::enable_final_rotation = false,
+            keywords::auto_flush = true,
+            keywords::rotation_size = rotation_size_));
+        query_sink_->locked_backend()->set_file_collector(sinks::file::make_collector(
+            keywords::target = log_dir_)); 
+        query_sink_->locked_backend()->scan_for_files();
+        query_sink_->set_filter(log_type_attr == "query");
+        query_sink_->set_formatter(&formatter);
+
+        // Add sinks to log core
+        logging::core::get()->add_sink(query_sink_);
+
+        global_inited_ = true;
+    }
+
+    // write a json record to log file.
+    void WriteLog(std::string log_msg, int64_t start_time, int64_t end_time) {
+        if(end_time - start_time >= threshold) {
+            QUERY_LOG() << log_msg;
+        }
+    }
+
+    // remove sink from log core
+    void Close() {
+        logging::core::get()->remove_sink(query_sink_);
+    }
+
+    static QueryLogger& GetInstance() {
+        static QueryLogger instance;
+        return instance;
+    }
+};
+
+// audit logger
+#define AUDIT_LOG() BOOST_LOG(::lgraph_log::audit_logger::get())
+
+BOOST_LOG_INLINE_GLOBAL_LOGGER_INIT(audit_logger, src::logger_mt) {
+  src::logger_mt lg;
+  attrs::constant< std::string > audit_type("audit");
+  lg.add_attribute("LogType", audit_type);
+  return lg;
+}
+
+class AuditLogger {
+ private:
+    std::string log_dir_;
+    int rotation_size_;
+    boost::shared_ptr< file_sink > audit_sink_;
+    bool global_inited_ = false;
+
+ public:
+    void Init(std::string log_dir = "logs/") {
+        // Set up log directory
+        log_dir_ = log_dir;
+        if (log_dir_.back() != '/') {
+            log_dir_ += '/';
+        }
+        rotation_size_ = 5 * 1024 * 1024;
+
+        // Set up sink for debug log
+        audit_sink_ = boost::shared_ptr< file_sink > (new file_sink(
+            keywords::file_name = log_dir_ + "%Y%m%d_%H%M%S",
+            keywords::open_mode = std::ios_base::out | std::ios_base::app,
+            keywords::enable_final_rotation = false,
+            keywords::auto_flush = true,
+            keywords::rotation_size = rotation_size_));
+        audit_sink_->locked_backend()->set_file_collector(sinks::file::make_collector(
+            keywords::target = log_dir_));
+        audit_sink_->locked_backend()->scan_for_files();
+        audit_sink_->set_filter(log_type_attr == "audit");
+
+        // Add sinks to log core
+        logging::core::get()->add_sink(audit_sink_);
+
+        global_inited_ = true;
+    }
+
+    // write a json record to log file.
+    void WriteLog(json log_msg) {
+        AUDIT_LOG() << log_msg.dump();
+    }
+
+    // remove sink from log core
+    void Close() {
+        logging::core::get()->remove_sink(audit_sink_);
+    }
+
+    static AuditLogger& GetInstance() {
+        static AuditLogger instance;
+        return instance;
+    }
+};
+
 class LoggerManager {
  private:
     std::string log_dir_;
@@ -138,6 +271,8 @@ class LoggerManager {
             file_sink_->set_formatter(&formatter);
 
             logging::core::get()->add_sink(file_sink_);
+
+            QueryLogger::GetInstance().Init(log_dir_);
         } else {
             // Set up sink for stream log
             stream_sink_ = boost::shared_ptr< stream_sink > (new stream_sink());
@@ -301,139 +436,28 @@ class FatalLogger {
   << ::lgraph_log::logging::add_value("Line", __LINE__) \
   << ::lgraph_log::logging::add_value("File", __FILE__) \
 
-#define AUDIT_LOG() BOOST_LOG(::lgraph_log::audit_logger::get())
-
-BOOST_LOG_INLINE_GLOBAL_LOGGER_INIT(audit_logger, src::logger_mt) {
-  src::logger_mt lg;
-  attrs::constant< std::string > audit_type("audit");
-  lg.add_attribute("LogType", audit_type);
-  return lg;
-}
-
-class AuditLogger {
- private:
-    std::string log_dir_;
-    int rotation_size_;
-    boost::shared_ptr< file_sink > audit_sink_;
-    bool global_inited_ = false;
-
- public:
-    void Init(std::string log_dir = "logs/") {
-        // Set up log directory
-        log_dir_ = log_dir;
-        if (log_dir_.back() != '/') {
-            log_dir_ += '/';
-        }
-        rotation_size_ = 5 * 1024 * 1024;
-
-        // Set up sink for debug log
-        audit_sink_ = boost::shared_ptr< file_sink > (new file_sink(
-            keywords::file_name = log_dir_ + "%Y%m%d_%H%M%S",
-            keywords::open_mode = std::ios_base::out | std::ios_base::app,
-            keywords::enable_final_rotation = false,
-            keywords::auto_flush = true,
-            keywords::rotation_size = rotation_size_));
-        audit_sink_->locked_backend()->set_file_collector(sinks::file::make_collector(
-            keywords::target = log_dir_));
-        audit_sink_->locked_backend()->scan_for_files();
-        audit_sink_->set_filter(log_type_attr == "audit");
-
-        // Add sinks to log core
-        logging::core::get()->add_sink(audit_sink_);
-
-        global_inited_ = true;
-    }
-
-    // write a json record to log file.
-    void WriteLog(json log_msg) {
-        AUDIT_LOG() << log_msg.dump();
-    }
-
-    // remove sink from log core
-    void Close() {
-        logging::core::get()->remove_sink(audit_sink_);
-    }
-
-    static AuditLogger& GetInstance() {
-        static AuditLogger instance;
-        return instance;
-    }
-};
-
-// query log
-
-#define QUERY_LOG() BOOST_LOG(::lgraph_log::query_logger::get())
-
-BOOST_LOG_INLINE_GLOBAL_LOGGER_INIT(query_logger, src::logger_mt) {
-  src::logger_mt lg;
-  attrs::constant< std::string > query_type("query");
-  lg.add_attribute("LogType", query_type);
-  return lg;
-}
-
-// query logger
-class QueryLogger {
- private:
-    std::string log_dir_;
-    int64_t threshold;
-    int rotation_size_;
-    boost::shared_ptr< file_sink > query_sink_;
-    bool global_inited_ = false;
-
- public:
-    void Init(std::string log_dir = "logs/") {
-        // Set up log directory
-        log_dir_ = log_dir;
-        if (log_dir_.back() != '/') {
-            log_dir_ += '/';
-        }
-        rotation_size_ = 5 * 1024 * 1024;
-
-        // Set up sink for debug log
-        query_sink_ = boost::shared_ptr< file_sink > (new file_sink(
-            keywords::file_name = log_dir_ + "query_logs/" + "query_%Y%m%d_%H%M%S%f.log",
-            keywords::open_mode = std::ios_base::out | std::ios_base::app,
-            keywords::enable_final_rotation = false,
-            keywords::auto_flush = true,
-            keywords::rotation_size = rotation_size_)); 
-        query_sink_->locked_backend()->scan_for_files();
-        query_sink_->set_filter(log_type_attr == "query");
-
-        // Add sinks to log core
-        logging::core::get()->add_sink(query_sink_);
-
-        global_inited_ = true;
-    }
-
-    // write a json record to log file.
-    void WriteLog(std::string log_msg, int64_t start_time, int64_t end_time) {
-        if(end_time - start_time >= threshold) {
-            QUERY_LOG() << log_msg;
-        }
-    }
-
-    // remove sink from log core
-    void Close() {
-        logging::core::get()->remove_sink(query_sink_);
-    }
-
-    static QueryLogger& GetInstance() {
-        static QueryLogger instance;
-        return instance;
-    }
-};
-
 // query logger tls
 class QueryLoggerTLS {
     bool begun_ = false;
     int64_t start_time;
     int64_t end_time;
+    std::string user_;
+    std::string graph_;
+    std::string type_;
+    bool is_write_;
+    std::string content_;
 
  public:
-    int Begin() {
+    int Begin(const std::string& user, const std::string& graph,
+                      const std::string& type, bool is_write, const std::string& content) {
         if (!begun_) {
             begun_ = true;
             start_time = lgraph_api::DateTime::LocalNow().MicroSecondsSinceEpoch();
+            user_ = user;
+            graph_ = graph;
+            type_ = type;
+            is_write_ = is_write;
+            content_ = content;
         }
         return 0;
     }
@@ -441,13 +465,28 @@ class QueryLoggerTLS {
     int End() {
         if (begun_) {
             end_time = lgraph_api::DateTime::LocalNow().MicroSecondsSinceEpoch();
-            QueryLogger::GetInstance().WriteLog("query test", start_time, end_time);
+            std::string msg = user_ + " " + graph_ + " ";
+            if (is_write_) {
+                msg += "write ";
+            } else {
+                msg += "read ";
+            }
+            msg += content_;
+            QueryLogger::GetInstance().WriteLog(msg, start_time, end_time);
             begun_ = false;
         }
         return 0;
     }
 
-    static thread_local QueryLoggerTLS instance_;
+    static QueryLoggerTLS& GetInstance() {
+        static thread_local QueryLoggerTLS instance;
+        return instance;
+    }
 };
+
+#define BEG_QUERY_LOG(user, graph, type, is_write, desc)                                  \
+    ::lgraph_log::QueryLoggerTLS::GetInstance().Begin(user, graph, type, is_write, desc)  \
+
+#define QUERY_LOG_END() ::lgraph_log::QueryLoggerTLS::GetInstance().End()
 
 }  // namespace lgraph_log

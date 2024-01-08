@@ -249,6 +249,7 @@ bool lgraph::StateMachine::ApplyRequestDirectly(const lgraph::LGraphRequest* req
                                                    req->graph_query_request().type()))
                                             << " request.";
                     ApplyGraphQueryRequest(req, resp);
+                    QUERY_LOG_END();
                     break;
                 }
             case LGraphRequest::kPluginRequest:
@@ -957,6 +958,10 @@ bool lgraph::StateMachine::ApplyGraphQueryRequest(const LGraphRequest* lgraph_re
         true, is_write);
     BEG_AUDIT_LOG(
         user, req.graph(), lgraph::LogApiType::Cypher, is_write,
+        "[" + lgraph_api::to_string(convert::ToLGraphT(lgraph_req->graph_query_request().type())) +
+            "] " + req.query());
+    BEG_QUERY_LOG(
+        user, req.graph(), "Cypher", is_write,
         "[" + lgraph_api::to_string(convert::ToLGraphT(lgraph_req->graph_query_request().type())) +
             "] " + req.query());
     TimeoutTaskKiller timeout_killer;
